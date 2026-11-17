@@ -309,6 +309,7 @@ pub const Window = extern struct {
 
         // Template bindings
         tab_overview: *adw.TabOverview,
+        headerbar: *adw.HeaderBar,
         tab_bar: *adw.TabBar,
         tab_view: *adw.TabView,
         window_drop_target: *gtk.DropTarget,
@@ -318,6 +319,17 @@ pub const Window = extern struct {
 
         pub var offset: c_int = 0;
     };
+
+    /// Private callback slot shared with our patched libadwaita. The object
+    /// data points to this slot rather than converting a code pointer to data.
+    const NativeTabDrag = *const fn (
+        *adw.TabView,
+        *adw.TabPage,
+        *gdk.Device,
+        *const fn (?*anyopaque) callconv(.c) void,
+        ?*anyopaque,
+    ) callconv(.c) c_int;
+    const native_tab_drag: NativeTabDrag = &tabDragToWindow;
 
     pub fn new(
         app: *Application,
@@ -366,6 +378,10 @@ pub const Window = extern struct {
         priv.window_drop_target.setGtypes(
             &window_drop_types,
             window_drop_types.len,
+        );
+        priv.tab_view.as(gobject.Object).setData(
+            "ghostty-native-tab-drag",
+            @ptrCast(@constCast(&native_tab_drag)),
         );
 
         // We initialize our windowing protocol to none because we can't
@@ -2039,6 +2055,122 @@ pub const Window = extern struct {
         return content;
     }
 
+    fn tabDragToWindow(
+        view: *adw.TabView,
+        page: *adw.TabPage,
+        device: *gdk.Device,
+        prepare: *const fn (?*anyopaque) callconv(.c) void,
+        context: ?*anyopaque,
+    ) callconv(.c) c_int {
+        const self = ext.getAncestor(Self, view.as(gtk.Widget)) orelse return 0;
+        if (self.private().quick_terminal or view.getNPages() == 0) return 0;
+        if (!self.supportsWindowDrag()) return 0;
+        const origin = self.as(gtk.Native).getSurface() orelse return 0;
+
+        // End libadwaita reordering before moving its page. After this handoff
+        // we must return true even if the native drag fails, because the old
+        // tab drag can no longer resume. The detached window stays open.
+        prepare(context);
+
+        var x: f64 = 0;
+        var y: f64 = 0;
+        _ = origin.getDevicePosition(device, &x, &y, null);
+        var anchor_x = x;
+        var anchor_y = y;
+        const win = if (view.getNPages() == 1) self else win: {
+            const result = gobject.ext.newInstance(Self, .{
+                .application = Application.default(),
+            });
+
+            // This window inherits an initialized surface. Preserve the source
+            // size instead of resizing when another tab is later initialized.
+            result.private().surface_init = true;
+            result.as(gtk.Window).setDefaultSize(
+                self.as(gtk.Widget).getWidth(),
+                self.as(gtk.Widget).getHeight(),
+            );
+            view.transferPage(page, result.private().tab_view, 0);
+            result.as(gtk.Window).present();
+
+            // Attach the new headerbar under the pointer; its tab bar may be
+            // hidden by the time the compositor maps the window.
+            anchor_x = @as(f64, @floatFromInt(self.as(gtk.Widget).getWidth())) / 2;
+            var header_height: c_int = 0;
+            result.private().headerbar.as(gtk.Widget).measure(
+                .vertical,
+                -1,
+                null,
+                &header_height,
+                null,
+                null,
+            );
+            anchor_y = @as(f64, @floatFromInt(@max(header_height, 32))) / 2;
+            break :win result;
+        };
+        const surface = win.as(gtk.Native).getSurface() orelse return 1;
+        const content = win.windowDragContent(surface);
+        defer content.unref();
+        const drag = gdk.Drag.begin(
+            origin,
+            device,
+            content,
+            .{ .move = true },
+            x - anchor_x,
+            y - anchor_y,
+        ) orelse {
+            log.warn("native tab tear-off created a window but could not start its drag", .{});
+            return 1;
+        };
+
+        // Completion owns the drag's initial reference and one window
+        // reference. Both callbacks converge on a single release path.
+        win.beginWindowDragOpacity();
+        _ = gdk.Drag.signals.cancel.connect(
+            drag,
+            *Self,
+            tabDragCancelled,
+            win.ref(),
+            .{},
+        );
+        _ = gdk.Drag.signals.dnd_finished.connect(
+            drag,
+            *Self,
+            tabDragFinished,
+            win,
+            .{},
+        );
+        return 1;
+    }
+
+    fn tabDragCancelled(
+        drag: *gdk.Drag,
+        _: gdk.DragCancelReason,
+        self: *Self,
+    ) callconv(.c) void {
+        self.finishTabDrag(drag, false);
+    }
+
+    fn tabDragFinished(drag: *gdk.Drag, self: *Self) callconv(.c) void {
+        self.finishTabDrag(drag, true);
+    }
+
+    fn finishTabDrag(self: *Self, drag: *gdk.Drag, success: bool) void {
+        defer self.unref();
+        defer drag.unref();
+
+        _ = gobject.signalHandlersDisconnectMatched(
+            drag.as(gobject.Object),
+            .{ .data = true },
+            0,
+            0,
+            null,
+            null,
+            self,
+        );
+        self.as(gtk.Widget).setOpacity(self.private().window_drag_opacity);
+        drag.dropDone(@intFromBool(success));
+    }
+
     fn windowDropSource(target: *gtk.DropTarget) ?*Self {
         const drop = target.getCurrentDrop() orelse return null;
         const drag = drop.getDrag() orelse return null;
@@ -2626,6 +2758,7 @@ pub const Window = extern struct {
 
             // Bindings
             class.bindTemplateChildPrivate("tab_overview", .{});
+            class.bindTemplateChildPrivate("headerbar", .{});
             class.bindTemplateChildPrivate("tab_bar", .{});
             class.bindTemplateChildPrivate("tab_view", .{});
             class.bindTemplateChildPrivate("window_drop_target", .{});
