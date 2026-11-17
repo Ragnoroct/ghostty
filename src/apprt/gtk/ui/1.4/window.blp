@@ -44,8 +44,6 @@ template $GhosttyWindow: Adw.ApplicationWindow {
           actions: move;
           propagation-phase: capture;
           prepare => $window_drag_prepare();
-          drag-begin => $window_drag_begin();
-          drag-end => $window_drag_end();
         }
 
         title-widget: Adw.WindowTitle {

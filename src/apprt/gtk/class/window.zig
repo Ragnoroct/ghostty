@@ -253,9 +253,8 @@ pub const Window = extern struct {
         /// Idle source that closes an empty window after tab transfers finish.
         empty_window_close_source: ?c_uint = null,
 
-        /// Transient feedback while receiving or moving a window as a tab.
+        /// Transient feedback while receiving a window as a tab.
         window_drop_hover: bool = false,
-        window_drag_opacity: f64 = 1,
 
         /// Whether this window is a quick terminal. If it is then it
         /// behaves slightly differently under certain scenarios.
@@ -2124,7 +2123,6 @@ pub const Window = extern struct {
 
         // Completion owns the drag's initial reference and one window
         // reference. Both callbacks converge on a single release path.
-        win.beginWindowDragOpacity();
         _ = gdk.Drag.signals.cancel.connect(
             drag,
             *Self,
@@ -2167,7 +2165,6 @@ pub const Window = extern struct {
             null,
             self,
         );
-        self.as(gtk.Widget).setOpacity(self.private().window_drag_opacity);
         drag.dropDone(@intFromBool(success));
     }
 
@@ -2176,29 +2173,6 @@ pub const Window = extern struct {
         const drag = drop.getDrag() orelse return null;
         const ptr = drag.getContent().as(gobject.Object).getData("ghostty-toplevel-drag") orelse return null;
         return @ptrCast(@alignCast(ptr));
-    }
-
-    fn windowDragBegin(
-        _: *gtk.DragSource,
-        _: *gdk.Drag,
-        self: *Self,
-    ) callconv(.c) void {
-        self.beginWindowDragOpacity();
-    }
-
-    fn beginWindowDragOpacity(self: *Self) void {
-        const widget = self.as(gtk.Widget);
-        self.private().window_drag_opacity = widget.getOpacity();
-        widget.setOpacity(self.private().window_drag_opacity * 0.65);
-    }
-
-    fn windowDragEnd(
-        _: *gtk.DragSource,
-        _: *gdk.Drag,
-        _: c_int,
-        self: *Self,
-    ) callconv(.c) void {
-        self.as(gtk.Widget).setOpacity(self.private().window_drag_opacity);
     }
 
     fn setWindowDropHover(self: *Self, active: bool) void {
@@ -2779,8 +2753,6 @@ pub const Window = extern struct {
             class.bindTemplateCallback("tab_create_window", &tabViewCreateWindow);
             class.bindTemplateCallback("notify_n_pages", &tabViewNPages);
             class.bindTemplateCallback("window_drag_prepare", &windowDragPrepare);
-            class.bindTemplateCallback("window_drag_begin", &windowDragBegin);
-            class.bindTemplateCallback("window_drag_end", &windowDragEnd);
             class.bindTemplateCallback("window_drop_motion", &windowDropMotion);
             class.bindTemplateCallback("window_drop_leave", &windowDropLeave);
             class.bindTemplateCallback("window_drop", &windowDrop);
