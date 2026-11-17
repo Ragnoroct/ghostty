@@ -40,6 +40,14 @@ template $GhosttyWindow: Adw.ApplicationWindow {
       Adw.HeaderBar {
         visible: bind template.headerbar-visible;
 
+        Gtk.DragSource {
+          actions: move;
+          propagation-phase: capture;
+          prepare => $window_drag_prepare();
+          drag-begin => $window_drag_begin();
+          drag-end => $window_drag_end();
+        }
+
         title-widget: Adw.WindowTitle {
           title: bind $computed_title(template.config, template.title, template.title-override) as <string>;
           // Blueprint auto-formatter won't let me split this into multiple
@@ -119,35 +127,45 @@ template $GhosttyWindow: Adw.ApplicationWindow {
 
         [end]
         Gtk.Box {
-          orientation: horizontal;
-          visible: bind $titlebar_style_is_tabs(template.titlebar-style) as <bool>;
-
-          Gtk.ToggleButton {
-            styles [
-              "flat",
-            ]
-
-            icon-name: "view-grid-symbolic";
-            tooltip-text: _("View Open Tabs");
-            active: bind tab_overview.open bidirectional;
-            can-focus: false;
-            focus-on-click: false;
+          Gtk.Label window_drop_hint {
+            label: _("Drop to add tab");
+            visible: false;
+            margin-start: 12;
+            margin-end: 12;
+            styles ["accent"]
           }
 
-          Gtk.MenuButton {
-            styles [
-              "flat",
-            ]
+          Gtk.Box {
+            orientation: horizontal;
+            visible: bind $titlebar_style_is_tabs(template.titlebar-style) as <bool>;
 
-            notify::active => $notify_menu_active();
-            icon-name: "open-menu-symbolic";
-            menu-model: main_menu;
-            tooltip-text: _("Main Menu");
-            can-focus: false;
-          }
+            Gtk.ToggleButton {
+              styles [
+                "flat",
+              ]
 
-          Gtk.WindowControls {
-            side: end;
+              icon-name: "view-grid-symbolic";
+              tooltip-text: _("View Open Tabs");
+              active: bind tab_overview.open bidirectional;
+              can-focus: false;
+              focus-on-click: false;
+            }
+
+            Gtk.MenuButton {
+              styles [
+                "flat",
+              ]
+
+              notify::active => $notify_menu_active();
+              icon-name: "open-menu-symbolic";
+              menu-model: main_menu;
+              tooltip-text: _("Main Menu");
+              can-focus: false;
+            }
+
+            Gtk.WindowControls {
+              side: end;
+            }
           }
         }
       }
@@ -176,6 +194,15 @@ template $GhosttyWindow: Adw.ApplicationWindow {
       }
     }
   };
+
+  Gtk.DropTarget window_drop_target {
+    actions: move;
+    preload: true;
+    enter => $window_drop_motion();
+    motion => $window_drop_motion();
+    leave => $window_drop_leave();
+    drop => $window_drop();
+  }
 }
 
 menu split_menu {

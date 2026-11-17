@@ -5,6 +5,7 @@ const build_config = @import("../../../build_config.zig");
 const assert = @import("../../../quirks.zig").inlineAssert;
 const adw = @import("adw");
 const gdk = @import("gdk");
+const gdk_wayland = @import("gdk_wayland");
 const gio = @import("gio");
 const glib = @import("glib");
 const gobject = @import("gobject");
@@ -252,6 +253,10 @@ pub const Window = extern struct {
         /// Idle source that closes an empty window after tab transfers finish.
         empty_window_close_source: ?c_uint = null,
 
+        /// Transient feedback while receiving or moving a window as a tab.
+        window_drop_hover: bool = false,
+        window_drag_opacity: f64 = 1,
+
         /// Whether this window is a quick terminal. If it is then it
         /// behaves slightly differently under certain scenarios.
         quick_terminal: bool = false,
@@ -306,6 +311,8 @@ pub const Window = extern struct {
         tab_overview: *adw.TabOverview,
         tab_bar: *adw.TabBar,
         tab_view: *adw.TabView,
+        window_drop_target: *gtk.DropTarget,
+        window_drop_hint: *gtk.Label,
         toolbar: *adw.ToolbarView,
         toast_overlay: *adw.ToastOverlay,
 
@@ -354,6 +361,12 @@ pub const Window = extern struct {
             priv.config = config;
             break :config config.get();
         };
+
+        var window_drop_types = [_]gobject.Type{Self.getGObjectType()};
+        priv.window_drop_target.setGtypes(
+            &window_drop_types,
+            window_drop_types.len,
+        );
 
         // We initialize our windowing protocol to none because we can't
         // actually initialize this until we get realized.
@@ -1175,6 +1188,7 @@ pub const Window = extern struct {
 
     fn getTabsAutohide(self: *Self) bool {
         const priv = self.private();
+        if (priv.window_drop_hover) return false;
         const config = if (priv.config) |v| v.get() else return true;
 
         return switch (config.@"gtk-titlebar-style") {
@@ -1977,6 +1991,139 @@ pub const Window = extern struct {
         self.unref();
     }
 
+    fn supportsWindowDrag(self: *Self) bool {
+        const display = gobject.ext.cast(
+            gdk_wayland.WaylandDisplay,
+            self.as(gtk.Widget).getDisplay(),
+        ) orelse return false;
+        return display.queryRegistry("xdg_toplevel_drag_manager_v1") != 0;
+    }
+
+    fn windowDragPrepare(
+        source: *gtk.DragSource,
+        x: f64,
+        y: f64,
+        self: *Self,
+    ) callconv(.c) ?*gdk.ContentProvider {
+        const priv = self.private();
+        if (priv.quick_terminal or priv.tab_view.getNPages() != 1) return null;
+        if (!self.supportsWindowDrag()) return null;
+
+        const widget = source.as(gtk.EventController).getWidget() orelse return null;
+        var picked = widget.pick(x, y, .{});
+        while (picked) |child| : (picked = child.getParent()) {
+            if (child == widget) break;
+            if (gobject.ext.isA(child, gtk.Button) or
+                gobject.ext.isA(child, gtk.MenuButton) or
+                gobject.ext.isA(child, gtk.Editable))
+            {
+                return null;
+            }
+        }
+        return self.windowDragContent(null);
+    }
+
+    /// The returned provider owns a window reference through its GValue. GTK
+    /// reads the optional surface synchronously when starting the native drag.
+    fn windowDragContent(
+        self: *Self,
+        surface: ?*gdk.Surface,
+    ) *gdk.ContentProvider {
+        var value = gobject.ext.Value.newFrom(self);
+        defer value.unset();
+        const content = gdk.ContentProvider.newForValue(&value);
+        content.as(gobject.Object).setData("ghostty-toplevel-drag", self);
+        if (surface) |v| {
+            content.as(gobject.Object).setData("ghostty-drag-surface", v);
+        }
+        return content;
+    }
+
+    fn windowDropSource(target: *gtk.DropTarget) ?*Self {
+        const drop = target.getCurrentDrop() orelse return null;
+        const drag = drop.getDrag() orelse return null;
+        const ptr = drag.getContent().as(gobject.Object).getData("ghostty-toplevel-drag") orelse return null;
+        return @ptrCast(@alignCast(ptr));
+    }
+
+    fn windowDragBegin(
+        _: *gtk.DragSource,
+        _: *gdk.Drag,
+        self: *Self,
+    ) callconv(.c) void {
+        self.beginWindowDragOpacity();
+    }
+
+    fn beginWindowDragOpacity(self: *Self) void {
+        const widget = self.as(gtk.Widget);
+        self.private().window_drag_opacity = widget.getOpacity();
+        widget.setOpacity(self.private().window_drag_opacity * 0.65);
+    }
+
+    fn windowDragEnd(
+        _: *gtk.DragSource,
+        _: *gdk.Drag,
+        _: c_int,
+        self: *Self,
+    ) callconv(.c) void {
+        self.as(gtk.Widget).setOpacity(self.private().window_drag_opacity);
+    }
+
+    fn setWindowDropHover(self: *Self, active: bool) void {
+        const priv = self.private();
+        if (priv.window_drop_hover == active) return;
+        priv.window_drop_hover = active;
+        priv.window_drop_hint.as(gtk.Widget).setVisible(@intFromBool(active));
+        self.toggleCssClass("window-drop-target", active);
+        self.as(gobject.Object).notifyByPspec(properties.@"tabs-autohide".impl.param_spec);
+    }
+
+    fn windowDropMotion(
+        target: *gtk.DropTarget,
+        _: f64,
+        _: f64,
+        self: *Self,
+    ) callconv(.c) gdk.DragAction {
+        const accept = if (windowDropSource(target)) |source|
+            self.canReceiveWindow(source)
+        else
+            false;
+        self.setWindowDropHover(accept);
+        return if (accept) .{ .move = true } else .{};
+    }
+
+    fn canReceiveWindow(self: *Self, source: *Self) bool {
+        return source != self and
+            source.as(gtk.Widget).getMapped() != 0 and
+            !source.private().quick_terminal and
+            source.private().tab_view.getNPages() == 1 and
+            !self.private().quick_terminal and
+            self.private().tab_view.getNPages() > 0;
+    }
+
+    fn windowDropLeave(_: *gtk.DropTarget, self: *Self) callconv(.c) void {
+        self.setWindowDropHover(false);
+    }
+
+    fn windowDrop(
+        _: *gtk.DropTarget,
+        value: *const gobject.Value,
+        _: f64,
+        _: f64,
+        self: *Self,
+    ) callconv(.c) c_int {
+        self.setWindowDropHover(false);
+        const object = value.getObject() orelse return 0;
+        const source = gobject.ext.cast(Self, object) orelse return 0;
+        if (!self.canReceiveWindow(source)) return 0;
+
+        const from = source.private().tab_view;
+        const page = from.getNthPage(0);
+        const to = self.private().tab_view;
+        from.transferPage(page, to, to.getNPages());
+        return 1;
+    }
+
     fn setupTabMenu(
         _: *adw.TabView,
         page: ?*adw.TabPage,
@@ -2481,6 +2628,8 @@ pub const Window = extern struct {
             class.bindTemplateChildPrivate("tab_overview", .{});
             class.bindTemplateChildPrivate("tab_bar", .{});
             class.bindTemplateChildPrivate("tab_view", .{});
+            class.bindTemplateChildPrivate("window_drop_target", .{});
+            class.bindTemplateChildPrivate("window_drop_hint", .{});
             class.bindTemplateChildPrivate("toolbar", .{});
             class.bindTemplateChildPrivate("toast_overlay", .{});
 
@@ -2496,6 +2645,12 @@ pub const Window = extern struct {
             class.bindTemplateCallback("setup_tab_menu", &setupTabMenu);
             class.bindTemplateCallback("tab_create_window", &tabViewCreateWindow);
             class.bindTemplateCallback("notify_n_pages", &tabViewNPages);
+            class.bindTemplateCallback("window_drag_prepare", &windowDragPrepare);
+            class.bindTemplateCallback("window_drag_begin", &windowDragBegin);
+            class.bindTemplateCallback("window_drag_end", &windowDragEnd);
+            class.bindTemplateCallback("window_drop_motion", &windowDropMotion);
+            class.bindTemplateCallback("window_drop_leave", &windowDropLeave);
+            class.bindTemplateCallback("window_drop", &windowDrop);
             class.bindTemplateCallback("notify_selected_page", &tabViewSelectedPage);
             class.bindTemplateCallback("notify_config", &propConfig);
             class.bindTemplateCallback("notify_fullscreened", &propFullscreened);
