@@ -44,6 +44,10 @@ const FlatpakHostCommand = if (!build_config.flatpak) struct {
 /// The subprocess state for our exec backend.
 subprocess: Subprocess,
 
+/// Published by the I/O thread for main-thread process identity queries. Do not
+/// read subprocess.process outside the I/O thread: startup and exit mutate it.
+snapshot_pid: std.atomic.Value(i32) = .init(0),
+
 /// Initialize the exec state. This will NOT start it, this only sets
 /// up the internal state necessary to start it later.
 pub fn init(
@@ -102,6 +106,13 @@ pub fn threadEnter(
         std.process.exit(1);
     };
     errdefer self.subprocess.stop();
+    if (comptime builtin.target.os.tag != .windows) {
+        if (self.subprocess.process) |p| switch (p) {
+            .fork_exec => |cmd| self.snapshot_pid.store(cmd.pid orelse 0, .release),
+            .flatpak => {},
+        };
+    }
+    errdefer self.snapshot_pid.store(0, .release);
 
     // Watcher to detect subprocess exit
     var process: ?xev.Process = if (self.subprocess.process) |v| switch (v) {
@@ -197,6 +208,7 @@ pub fn threadExit(self: *Exec, td: *termio.Termio.ThreadData) void {
     assert(td.backend == .exec);
     const exec = &td.backend.exec;
 
+    self.snapshot_pid.store(0, .release);
     if (exec.exited) self.subprocess.externalExit();
     self.subprocess.stop();
 

@@ -309,7 +309,7 @@ pub const Application = extern struct {
             // Failures shuldn't stop application startup. Our app may
             // not translate correctly but it should still work. In the
             // future we may want to add this to the GUI to show.
-            log.warn("i18n initialization failed error={}", .{err});
+            log.warn("i18n initialization failed error={t}", .{err});
         };
 
         // Setup our GTK init env vars
@@ -371,7 +371,7 @@ pub const Application = extern struct {
             // If we fail to detect or setup the windowing protocol
             // specifies, we fallback to a noop implementation so we can
             // still launch.
-            log.warn("error initializing windowing protocol err={}", .{err});
+            log.warn("error initializing windowing protocol err={t}", .{err});
             break :wp .{ .none = .{} };
         };
         errdefer wp.deinit();
@@ -676,6 +676,7 @@ pub const Application = extern struct {
                 // tries to free on its own. I think this is probably a bug in
                 // the fcitx ime widget but still, we don't want a double free!
                 if (gobject.ext.isA(window, Window)) {
+                    if (gobject.ext.cast(Window, window)) |w| w.closeSnapshot("app_quit");
                     window.destroy();
                 }
             }
@@ -1332,6 +1333,10 @@ pub const Application = extern struct {
 
         // Set ourselves as the default application.
         gio.Application.setDefault(self.as(gio.Application));
+        if (self.private().config.get().@"window-state-export") {
+            @import("../window_snapshot.zig").gc() catch |err|
+                log.warn("startup state GC failed: {t}", .{err});
+        }
 
         // The D-Bus connection is only valid after GApplication startup.
         self.openUri().setDbusConnection(
@@ -1460,6 +1465,7 @@ pub const Application = extern struct {
             .init("new-tab", actionNewTab, tas_variant_type),
             .init("open-config", actionOpenConfig, s_variant_type),
             .init("present-surface", actionPresentSurface, t_variant_type),
+            .init("focus-surface", actionFocusSurface, s_variant_type),
             .init("quit", actionQuit, null),
             .init("reload-config", actionReloadConfig, null),
             .init("toggle-quick-terminal", actionToggleQuickTerminal, null),
@@ -1571,7 +1577,7 @@ pub const Application = extern struct {
             // If we fail to reload the configuration, then we want the
             // user to know it. For now we log but we should show another
             // GUI.
-            log.warn("error reloading config: {}", .{err});
+            log.warn("error reloading config: {t}", .{err});
         };
 
         return @intFromBool(glib.SOURCE_CONTINUE);
@@ -1605,7 +1611,7 @@ pub const Application = extern struct {
         const priv: *Private = self.private();
         const core_app = priv.core_app;
         core_app.colorSchemeEvent(self.rt(), scheme) catch |err| {
-            log.warn("error updating app color scheme err={}", .{err});
+            log.warn("error updating app color scheme err={t}", .{err});
         };
         for (core_app.surfaces.items) |surface| {
             surface.core().colorSchemeCallback(scheme) catch |err| {
@@ -1655,7 +1661,7 @@ pub const Application = extern struct {
             // If we fail to reload the configuration, then we want the
             // user to know it. For now we log but we should show another
             // GUI.
-            log.warn("error reloading config: {}", .{err});
+            log.warn("error reloading config: {t}", .{err});
         };
     }
 
@@ -1712,7 +1718,7 @@ pub const Application = extern struct {
         self: *Self,
     ) callconv(.c) void {
         self.core().performAllAction(self.rt(), action.*) catch |err| {
-            log.warn("failed to perform action={}", .{err});
+            log.warn("failed to perform action={t}", .{err});
         };
     }
 
@@ -1759,7 +1765,7 @@ pub const Application = extern struct {
     ) callconv(.c) void {
         const priv = self.private();
         priv.core_app.performAction(self.rt(), .reload_config) catch |err| {
-            log.warn("error reloading config err={}", .{err});
+            log.warn("error reloading config err={t}", .{err});
         };
     }
 
@@ -1770,8 +1776,37 @@ pub const Application = extern struct {
     ) callconv(.c) void {
         const priv = self.private();
         priv.core_app.performAction(self.rt(), .toggle_quick_terminal) catch |err| {
-            log.warn("error toggling quick terminal err={}", .{err});
+            log.warn("error toggling quick terminal err={t}", .{err});
         };
+    }
+
+    fn actionFocusSurface(_: *gio.SimpleAction, parameter: ?*glib.Variant, self: *Self) callconv(.c) void {
+        const param = parameter orelse return;
+        var value: ?[*:0]const u8 = null;
+        param.get("&s", &value);
+        const surface = Surface.findStateId(std.mem.span(value orelse return)) orelse return;
+        // Hidden zoom siblings have no GTK widget ancestors. Membership must
+        // come from the retained split trees, not the current widget hierarchy.
+        var windows: ?*glib.List = self.as(gtk.Application).getWindows();
+        while (windows) |entry| : (windows = entry.f_next) {
+            const gtk_window: *gtk.Window = @ptrCast(@alignCast(entry.f_data orelse continue));
+            const window = gobject.ext.cast(Window, gtk_window) orelse continue;
+            const view = window.getTabView();
+            var i: c_int = 0;
+            while (i < view.getNPages()) : (i += 1) {
+                const page = view.getNthPage(i);
+                const tab = gobject.ext.cast(Tab, page.getChild()) orelse continue;
+                const tree = tab.getSurfaceTree() orelse continue;
+                var it = tree.iterator();
+                while (it.next()) |leaf| {
+                    if (leaf.view != surface) continue;
+                    view.setSelectedPage(page);
+                    tab.getSplitTree().focusSurface(surface);
+                    window.as(gtk.Window).present();
+                    return;
+                }
+            }
+        }
     }
 
     fn actionQuit(
@@ -1781,7 +1816,7 @@ pub const Application = extern struct {
     ) callconv(.c) void {
         const priv = self.private();
         priv.core_app.performAction(self.rt(), .quit) catch |err| {
-            log.warn("error quitting err={}", .{err});
+            log.warn("error quitting err={t}", .{err});
         };
     }
 
@@ -2086,7 +2121,7 @@ pub const Application = extern struct {
         internal_os.open(
             kind,
             url,
-        ) catch |err| log.warn("unable to open url: {}", .{err});
+        ) catch |err| log.warn("unable to open url: {t}", .{err});
     }
 };
 
@@ -3225,7 +3260,7 @@ const Action = struct {
             },
             .surface => |core| {
                 core.rt_surface.gobj().keySequenceAction(value) catch |err| {
-                    log.warn("error handling key_sequence action: {}", .{err});
+                    log.warn("error handling key_sequence action: {t}", .{err});
                 };
                 return true;
             },
@@ -3240,7 +3275,7 @@ const Action = struct {
             },
             .surface => |core| {
                 core.rt_surface.gobj().keyTableAction(value) catch |err| {
-                    log.warn("error handling key_table action: {}", .{err});
+                    log.warn("error handling key_table action: {t}", .{err});
                 };
                 return true;
             },

@@ -581,6 +581,7 @@ pub const Surface = extern struct {
     };
 
     const Private = struct {
+        state_id: [18]u8 = "0x0000000000000000".*,
         /// The configuration that this surface is using.
         config: ?*Config = null,
 
@@ -1608,6 +1609,13 @@ pub const Surface = extern struct {
             try global.environMap();
         errdefer env.deinit();
 
+        _ = env.orderedRemove("GHOSTTY_TAB_ID");
+        _ = env.orderedRemove("GHOSTTY_WINDOW_ID");
+        if (ext.getAncestor(@import("tab.zig").Tab, self.as(gtk.Widget))) |tab|
+            try env.put("GHOSTTY_TAB_ID", tab.getStateId());
+        if (ext.getAncestor(Window, self.as(gtk.Widget))) |window|
+            try env.put("GHOSTTY_WINDOW_ID", window.getStateId());
+
         if (app.savedLanguage()) |language| {
             try env.put("LANG", language);
         } else {
@@ -1806,6 +1814,24 @@ pub const Surface = extern struct {
 
     //---------------------------------------------------------------
     // Virtual Methods
+
+    pub fn getShellPid(self: *Self) ?i32 {
+        const core_surface = self.core() orelse return null;
+        const pid = core_surface.io.backend.exec.snapshot_pid.load(.acquire);
+        return if (pid != 0) pid else null;
+    }
+
+    pub fn findStateId(id: []const u8) ?*Self {
+        const core_id = std.fmt.parseInt(u64, id, 0) catch return null;
+        const core_surface = Application.default().core().findSurfaceByID(core_id) orelse return null;
+        return core_surface.rt_surface.surface;
+    }
+
+    pub fn getStateId(self: *Self) *const [18]u8 {
+        const core_surface = self.core() orelse return &self.private().state_id;
+        _ = std.mem.print(&self.private().state_id, "0x{x:0>16}", .{core_surface.id}) catch unreachable;
+        return &self.private().state_id;
+    }
 
     fn init(self: *Self, _: *Class) callconv(.c) void {
         gtk.Widget.initTemplate(self.as(gtk.Widget));
@@ -3342,6 +3368,7 @@ pub const Surface = extern struct {
         self: *Self,
     ) callconv(.c) void {
         const priv = self.private();
+        if (ext.getAncestor(Window, self.as(gtk.Widget))) |window| window.getSnapshotState().input();
         const str = std.mem.sliceTo(bytes, 0);
 
         // log.debug("GTKIM: input commit composing={} keyevent={} str={s}", .{

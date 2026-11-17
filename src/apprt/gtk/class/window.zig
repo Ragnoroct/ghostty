@@ -1,3 +1,5 @@
+const window_snapshot = @import("../window_snapshot.zig");
+const window_state = @import("../window_state.zig");
 const std = @import("std");
 const build_config = @import("../../../build_config.zig");
 const assert = @import("../../../quirks.zig").inlineAssert;
@@ -244,6 +246,8 @@ pub const Window = extern struct {
     };
 
     const Private = struct {
+        state_id: window_state.Id = undefined,
+        snapshot: window_snapshot.State = .{},
         /// Whether this window is a quick terminal. If it is then it
         /// behaves slightly differently under certain scenarios.
         quick_terminal: bool = false,
@@ -327,7 +331,12 @@ pub const Window = extern struct {
         return win;
     }
 
+    pub fn getStateId(self: *Self) *const window_state.Id {
+        return &self.private().state_id;
+    }
+
     fn init(self: *Self, _: *Class) callconv(.c) void {
+        self.private().state_id = window_state.newId();
         gtk.Widget.initTemplate(self.as(gtk.Widget));
 
         // If our configuration is null then we get the configuration
@@ -380,10 +389,53 @@ pub const Window = extern struct {
         // config and such can affect our bindings which are setup initially
         // in initTemplate.
         self.syncAppearance();
+        priv.snapshot.init(self);
+        const controller = gtk.EventControllerLegacy.new();
+        controller.as(gtk.EventController).setPropagationPhase(.capture);
+        _ = gtk.EventControllerLegacy.signals.event.connect(controller, *Self, stateInputEvent, self, .{});
+        self.as(gtk.Widget).addController(controller.as(gtk.EventController));
+        _ = gobject.Object.signals.notify.connect(self, *Self, stateWindowNotify, self, .{});
+        _ = gobject.Object.signals.notify.connect(priv.tab_view, *Self, stateTabNotify, self, .{});
+        _ = adw.TabView.signals.page_reordered.connect(priv.tab_view, *Self, statePageReordered, self, .{});
 
         // We need to do this so that the title initializes properly,
         // I think because its a dynamic getter.
         self.as(gobject.Object).notifyByPspec(properties.@"active-surface".impl.param_spec);
+    }
+
+    pub fn getSnapshotState(self: *Self) *window_snapshot.State {
+        return &self.private().snapshot;
+    }
+
+    pub fn closeSnapshot(self: *Self, reason: []const u8) void {
+        self.private().snapshot.close(self, reason);
+    }
+
+    fn stateInputEvent(_: *gtk.EventControllerLegacy, event: *gdk.Event, self: *Self) callconv(.c) c_int {
+        switch (event.getEventType()) {
+            .key_press, .key_release, .motion_notify, .button_press, .button_release, .scroll, .touch_begin, .touch_update, .touch_end, .touch_cancel, .touchpad_swipe, .touchpad_pinch, .touchpad_hold, .pad_button_press, .pad_button_release, .pad_ring, .pad_strip, .pad_group_mode, .pad_dial, .proximity_in, .proximity_out => self.private().snapshot.input(),
+            else => {},
+        }
+        return 0;
+    }
+
+    fn stateWindowNotify(_: *Self, pspec: *gobject.ParamSpec, self: *Self) callconv(.c) void {
+        const name = std.mem.span(pspec.getName());
+        if (std.mem.eql(u8, name, "default-width") or std.mem.eql(u8, name, "default-height") or
+            std.mem.eql(u8, name, "maximized")) self.private().snapshot.structural();
+    }
+    fn stateTabNotify(_: *adw.TabView, pspec: *gobject.ParamSpec, self: *Self) callconv(.c) void {
+        const name = std.mem.span(pspec.getName());
+        if (std.mem.eql(u8, name, "selected-page") or std.mem.eql(u8, name, "n-pages"))
+            self.private().snapshot.structural();
+    }
+    fn statePageReordered(_: *adw.TabView, _: *adw.TabPage, _: c_int, self: *Self) callconv(.c) void {
+        self.private().snapshot.structural();
+    }
+    fn stateSurfaceNotify(_: *Surface, pspec: *gobject.ParamSpec, self: *Self) callconv(.c) void {
+        const name = std.mem.span(pspec.getName());
+        if (std.mem.eql(u8, name, "title") or std.mem.eql(u8, name, "pwd") or std.mem.eql(u8, name, "focused"))
+            self.private().snapshot.soft();
     }
 
     /// Setup our action map.
@@ -416,6 +468,21 @@ pub const Window = extern struct {
         };
 
         ext.actions.add(Self, self, &actions);
+        self.syncBindingAction();
+    }
+
+    fn syncBindingAction(self: *Self) void {
+        self.as(gio.ActionMap).removeAction("binding-action");
+        const s_variant_type = glib.ext.VariantType.newFor([:0]const u8);
+        defer s_variant_type.free();
+        if (self.private().config) |cfg| {
+            if (cfg.get().@"dbus-binding-action") {
+                const extra = [_]ext.actions.Action(Self){
+                    .init("binding-action", actionBindingAction, s_variant_type),
+                };
+                ext.actions.add(Self, self, &extra);
+            }
+        }
     }
 
     /// Winproto backend for this window.
@@ -728,7 +795,7 @@ pub const Window = extern struct {
 
         // Do our window-protocol specific appearance sync.
         priv.winproto.syncAppearance() catch |err| {
-            log.warn("failed to sync winproto appearance error={}", .{err});
+            log.warn("failed to sync winproto appearance error={t}", .{err});
         };
     }
 
@@ -769,7 +836,7 @@ pub const Window = extern struct {
         const surface = self.getActiveSurface() orelse return;
         const core_surface = surface.core() orelse return;
         _ = core_surface.performBindingAction(action) catch |err| {
-            log.warn("error performing binding action error={}", .{err});
+            log.warn("error performing binding action error={t}", .{err});
             return;
         };
     }
@@ -806,6 +873,8 @@ pub const Window = extern struct {
                 null,
                 self,
             );
+
+            _ = gobject.Object.signals.notify.connect(surface, *Self, stateSurfaceNotify, self, .{});
 
             _ = Surface.signals.@"present-request".connect(
                 surface,
@@ -1180,6 +1249,11 @@ pub const Window = extern struct {
         const priv = self.private();
         if (priv.config) |config_obj| {
             const config = config_obj.get();
+            self.syncBindingAction();
+            if (priv.snapshot.enabled != config.@"window-state-export") {
+                if (config.@"window-state-export") priv.snapshot.init(self) else priv.snapshot.dispose();
+            }
+
             if (config.@"app-notifications".@"config-reload") {
                 self.addToast(i18n._("Reloaded the configuration"));
             }
@@ -1228,6 +1302,7 @@ pub const Window = extern struct {
         _: *gobject.ParamSpec,
         self: *Self,
     ) callconv(.c) void {
+        self.private().snapshot.structural();
         // X11 needs to fix blurring on resize, but winproto implementations
         // could do anything.
         self.private().winproto.resizeEvent() catch |err| {
@@ -1320,7 +1395,7 @@ pub const Window = extern struct {
         if (priv.quick_terminal) {
             // Initialize the quick terminal at the app-layer
             Application.default().winproto().initQuickTerminal(self) catch |err| {
-                log.warn("failed to initialize quick terminal error={}", .{err});
+                log.warn("failed to initialize quick terminal error={t}", .{err});
                 return;
             };
         }
@@ -1425,6 +1500,7 @@ pub const Window = extern struct {
 
     fn dispose(self: *Self) callconv(.c) void {
         const priv = self.private();
+        priv.snapshot.dispose();
 
         if (priv.handle_active_state_source) |v| {
             if (glib.Source.remove(v) == 0) {
@@ -1479,7 +1555,7 @@ pub const Window = extern struct {
         )) |wp| {
             self.private().winproto = wp;
         } else |err| {
-            log.warn("failed to initialize window protocol error={}", .{err});
+            log.warn("failed to initialize window protocol error={t}", .{err});
             return;
         }
 
@@ -1619,6 +1695,7 @@ pub const Window = extern struct {
             return @intFromBool(true);
         }
 
+        self.closeSnapshot("window_close");
         self.as(gtk.Window).destroy();
         return @intFromBool(false);
     }
@@ -1627,6 +1704,7 @@ pub const Window = extern struct {
         _: *CloseConfirmationDialog,
         self: *Self,
     ) callconv(.c) void {
+        self.closeSnapshot("window_close");
         self.as(gtk.Window).destroy();
     }
 
@@ -2002,6 +2080,7 @@ pub const Window = extern struct {
         new_tree: ?*const Surface.Tree,
         self: *Self,
     ) callconv(.c) void {
+        self.private().snapshot.structural();
         if (old_tree) |tree| {
             self.disconnectSurfaceHandlers(tree);
         }
@@ -2044,6 +2123,24 @@ pub const Window = extern struct {
         self: *Self,
     ) callconv(.c) void {
         self.as(gtk.Window).close();
+    }
+
+    fn actionBindingAction(
+        _: *gio.SimpleAction,
+        parameter: ?*glib.Variant,
+        self: *Self,
+    ) callconv(.c) void {
+        // Recheck after configuration reload, even if the action was registered.
+        const cfg = self.private().config orelse return;
+        if (!cfg.get().@"dbus-binding-action") return;
+        const param = parameter orelse return;
+        var value: ?[*:0]const u8 = null;
+        param.get("&s", &value);
+        const action = input.Binding.Action.parse(std.mem.span(value orelse return)) catch |err| {
+            log.warn("invalid win.binding-action: {t}", .{err});
+            return;
+        };
+        self.performBindingAction(action);
     }
 
     fn actionCloseTab(
@@ -2213,7 +2310,7 @@ pub const Window = extern struct {
 
             // Request user attention
             self.winproto().setUrgent(true) catch |err| {
-                log.warn("winproto failed to set urgency={}", .{err});
+                log.warn("winproto failed to set urgency={t}", .{err});
             };
         }
     }

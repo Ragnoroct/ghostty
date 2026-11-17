@@ -1,3 +1,4 @@
+const window_state = @import("../window_state.zig");
 const std = @import("std");
 const adw = @import("adw");
 const gio = @import("gio");
@@ -157,6 +158,7 @@ pub const Tab = extern struct {
     };
 
     const Private = struct {
+        state_id: window_state.Id = undefined,
         /// The configuration that this surface is using.
         config: ?*Config = null,
 
@@ -222,7 +224,12 @@ pub const Tab = extern struct {
         return tab;
     }
 
+    pub fn getStateId(self: *Self) *const window_state.Id {
+        return &self.private().state_id;
+    }
+
     fn init(self: *Self, _: *Class) callconv(.c) void {
+        self.private().state_id = window_state.newId();
         gtk.Widget.initTemplate(self.as(gtk.Widget));
 
         // Init our actions
@@ -255,6 +262,8 @@ pub const Tab = extern struct {
         priv.title_override = null;
         if (title) |v| priv.title_override = glib.ext.dupeZ(u8, v);
         self.as(gobject.Object).notifyByPspec(properties.@"title-override".impl.param_spec);
+        if (ext.getAncestor(@import("window.zig").Window, self.as(gtk.Widget))) |window|
+            window.getSnapshotState().structural();
     }
     fn titleDialogSet(
         _: *TitleDialog,

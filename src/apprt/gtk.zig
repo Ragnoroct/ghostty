@@ -16,4 +16,6 @@ test {
     _ = @import("gtk/key.zig");
     _ = @import("gtk/portal.zig");
     _ = @import("gtk/scale.zig");
+    _ = @import("gtk/window_state.zig");
+    _ = @import("gtk/window_snapshot.zig");
 }

@@ -3798,6 +3798,15 @@ else
 /// so you can test single instance without conflicting with release builds.
 @"gtk-single-instance": GtkSingleInstance = .default,
 
+/// Export private per-window layout snapshots under XDG_STATE_HOME.
+/// Only supported by the GTK runtime. Disabling this stops state export.
+@"window-state-export": bool = true,
+
+/// Allow session-bus clients to execute arbitrary keybinding actions on a
+/// window, including text injection. Enable only when session-bus clients are
+/// trusted. Only supported by the GTK runtime; disabled by default.
+@"dbus-binding-action": bool = false,
+
 /// When enabled, the full GTK titlebar is displayed instead of your window
 /// manager's simple titlebar. The behavior of this option will vary with your
 /// window manager.

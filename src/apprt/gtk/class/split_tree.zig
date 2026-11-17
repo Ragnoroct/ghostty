@@ -352,6 +352,18 @@ pub const SplitTree = extern struct {
 
     /// Move focus from the currently focused surface to the given
     /// direction. Returns true if focus switched to a new surface.
+    /// Retain focus across the deferred rebuild when revealing a zoom sibling.
+    pub fn focusSurface(self: *Self, surface: *Surface) void {
+        self.private().last_focused.set(surface);
+        if (self.getTree()) |tree| {
+            if (tree.zoomed != null) {
+                tree.zoomed = null;
+                self.as(gobject.Object).notifyByPspec(properties.tree.impl.param_spec);
+            }
+        }
+        surface.grabFocus();
+    }
+
     pub fn goto(self: *Self, to: Surface.Tree.Goto) bool {
         const tree = self.getTree() orelse return false;
         const active = self.getActiveSurfaceHandle() orelse return false;
@@ -401,6 +413,8 @@ pub const SplitTree = extern struct {
             // relayout.
             const object = self.as(gobject.Object);
             object.notifyByPspec(properties.tree.impl.param_spec);
+            if (ext.getAncestor(@import("window.zig").Window, self.as(gtk.Widget))) |window|
+                window.getSnapshotState().structural();
             object.notifyByPspec(properties.@"is-zoomed".impl.param_spec);
         }
 
@@ -636,6 +650,8 @@ pub const SplitTree = extern struct {
         }
 
         self.as(gobject.Object).notifyByPspec(properties.tree.impl.param_spec);
+        if (ext.getAncestor(@import("window.zig").Window, self.as(gtk.Widget))) |window|
+            window.getSnapshotState().structural();
     }
 
     fn getTreeValue(self: *Self, value: *gobject.Value) void {
@@ -909,6 +925,8 @@ pub const SplitTree = extern struct {
         _: ?*anyopaque,
     ) callconv(.c) void {
         const priv = self.private();
+        if (ext.getAncestor(@import("window.zig").Window, self.as(gtk.Widget))) |window|
+            window.getSnapshotState().structural();
 
         // No matter what we notify
         self.as(gobject.Object).freezeNotify();
@@ -1385,6 +1403,8 @@ const SplitTreeSplit = extern struct {
         assert(priv.handle.idx() < tree.nodes.len);
         assert(tree.nodes[priv.handle.idx()] == .split);
         tree.resizeInPlace(priv.handle, @floatCast(ratio));
+        if (ext.getAncestor(@import("window.zig").Window, self.as(gtk.Widget))) |window|
+            window.getSnapshotState().structural();
         priv.ratio = ratio;
     }
 
