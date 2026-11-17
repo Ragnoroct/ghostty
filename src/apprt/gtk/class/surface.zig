@@ -1611,6 +1611,7 @@ pub const Surface = extern struct {
 
         _ = env.orderedRemove("GHOSTTY_TAB_ID");
         _ = env.orderedRemove("GHOSTTY_WINDOW_ID");
+        try env.put("GHOSTTY_TITLE_STATUS", "1");
         if (ext.getAncestor(@import("tab.zig").Tab, self.as(gtk.Widget))) |tab|
             try env.put("GHOSTTY_TAB_ID", tab.getStateId());
         if (ext.getAncestor(Window, self.as(gtk.Widget))) |window|
@@ -2143,6 +2144,12 @@ pub const Surface = extern struct {
         priv.title = null;
         if (title) |v| priv.title = glib.ext.dupeZ(u8, v);
         self.as(gobject.Object).notifyByPspec(properties.title.impl.param_spec);
+    }
+
+    /// Status signals target the containing tab, independently of focus.
+    pub fn setTitleStatus(self: *Self, status: [:0]const u8) void {
+        if (ext.getAncestor(@import("tab.zig").Tab, self.as(gtk.Widget))) |tab|
+            tab.setTitleStatus(status, self);
     }
 
     /// Overridden title. This will be generally be shown over the title

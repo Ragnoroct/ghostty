@@ -1036,6 +1036,13 @@ pub fn handleMessage(self: *Surface, msg: Message) !void {
             );
         },
 
+        .set_title_status => |*v| {
+            if (comptime @hasDecl(apprt.runtime.Surface, "setTitleStatus")) {
+                const slice = std.mem.sliceTo(@as([*:0]const u8, @ptrCast(v)), 0);
+                self.rt_surface.setTitleStatus(slice);
+            }
+        },
+
         .report_title => |style| report_title: {
             if (!self.config.title_report) {
                 log.info("report_title requested, but disabled via config", .{});

@@ -46,6 +46,10 @@ pub fn getTitle(self: *Self) ?[:0]const u8 {
     return self.surface.getTitle();
 }
 
+pub fn setTitleStatus(self: *Self, status: [:0]const u8) void {
+    self.surface.setTitleStatus(status);
+}
+
 pub fn getContentScale(self: *const Self) !apprt.ContentScale {
     return self.surface.getContentScale();
 }

@@ -346,6 +346,8 @@ pub fn init(self: *Termio, alloc: Allocator, opts: termio.Options) !void {
         .terminal_stream = .init(.{
             .allocator = alloc,
             .handler = handler,
+            // Bounded capture for local private title-status OSC signals.
+            .osc_unknown_max_bytes = 512,
         }),
         .thread_enter_state = thread_enter_state,
     };

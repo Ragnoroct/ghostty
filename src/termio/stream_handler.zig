@@ -342,6 +342,11 @@ pub const StreamHandler = struct {
             .active_status_display => self.terminal.status_display = value,
             .decaln => try self.decaln(),
             .window_title => try self.windowTitle(value.title),
+            .osc_unknown => {
+                var buf: [256]u8 = undefined;
+                if (@import("title_status.zig").decode(value.content, value.truncated, &buf) != null)
+                    self.surfaceMessageWriter(.{ .set_title_status = buf });
+            },
             .report_pwd => try self.reportPwd(value.url),
             .show_desktop_notification => try self.showDesktopNotification(value.title, value.body),
             .progress_report => self.progressReport(value),
@@ -384,7 +389,6 @@ pub const StreamHandler = struct {
             .title_push,
             .title_pop,
             .kitty_dnd,
-            .osc_unknown,
             .program_status,
             => {},
         }

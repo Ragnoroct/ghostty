@@ -141,6 +141,15 @@ pub const Tab = extern struct {
                 },
             );
         };
+        pub const @"title-status" = struct {
+            pub const name = "title-status";
+            const impl = gobject.ext.defineProperty(
+                name,
+                Self,
+                ?[:0]const u8,
+                .{ .default = null, .accessor = C.privateStringFieldAccessor("title_status") },
+            );
+        };
     };
 
     pub const signals = struct {
@@ -168,8 +177,12 @@ pub const Tab = extern struct {
         /// The manually overridden title.
         title_override: ?[:0]const u8 = null,
 
-        /// Keep recognized activity decorations alongside a manually set name.
+        /// Allow the separate status prefix alongside a manually set name.
         title_status_updatable: bool = false,
+
+        /// Last status signal from any pane. Focus does not affect ownership.
+        title_status: ?[:0]const u8 = null,
+        title_status_source: ?*Surface = null,
 
         /// The tooltip of this tab. This is usually bound to the active surface.
         tooltip: ?[:0]const u8 = null,
@@ -292,6 +305,14 @@ pub const Tab = extern struct {
         dialog.present(self.as(gtk.Widget));
     }
 
+    pub fn setTitleStatus(self: *Self, status: []const u8, source: ?*Surface) void {
+        const priv = self.private();
+        if (priv.title_status) |v| glib.free(@ptrCast(@constCast(v)));
+        priv.title_status = if (status.len == 0) null else glib.ext.dupeZ(u8, status);
+        priv.title_status_source = if (status.len == 0) null else source;
+        self.as(gobject.Object).notifyByPspec(properties.@"title-status".impl.param_spec);
+    }
+
     /// Get the currently active surface. See the "active-surface" property.
     /// This does not ref the value.
     pub fn getActiveSurface(self: *Self) ?*Surface {
@@ -366,6 +387,10 @@ pub const Tab = extern struct {
             glib.free(@ptrCast(@constCast(v)));
             priv.title_override = null;
         }
+        if (priv.title_status) |v| {
+            glib.free(@ptrCast(@constCast(v)));
+            priv.title_status = null;
+        }
 
         gobject.Object.virtual_methods.finalize.call(
             Class.parent,
@@ -384,6 +409,15 @@ pub const Tab = extern struct {
 
         // If our tree is empty we close the tab.
         const tree: *const Surface.Tree = self.getSurfaceTree() orelse &.empty;
+        // Removing the last writer clears its status without reviving an older
+        // pane's value. The source pointer is only compared, never dereferenced.
+        if (self.private().title_status_source) |source| {
+            var it = tree.iterator();
+            const present = while (it.next()) |entry| {
+                if (entry.view == source) break true;
+            } else false;
+            if (!present) self.setTitleStatus("", null);
+        }
         if (tree.isEmpty()) {
             signals.@"close-request".impl.emit(
                 self,
@@ -493,6 +527,7 @@ pub const Tab = extern struct {
         terminal_: ?[*:0]const u8,
         surface_override_: ?[*:0]const u8,
         tab_override_: ?[*:0]const u8,
+        status_: ?[*:0]const u8,
         zoomed_: c_int,
         bell_ringing_: c_int,
         _: *gobject.ParamSpec,
@@ -544,8 +579,8 @@ pub const Tab = extern struct {
         @import("../title_activity.zig").writeTitle(
             &buf.writer,
             plain,
-            if (terminal_) |v| std.mem.span(v) else null,
-            tab_override_ != null and self.private().title_status_updatable,
+            if (status_) |v| std.mem.span(v) else null,
+            tab_override_ == null or self.private().title_status_updatable,
         ) catch return glib.ext.dupeZ(u8, plain);
         return glib.ext.dupeZ(u8, buf.written());
     }
@@ -581,6 +616,7 @@ pub const Tab = extern struct {
                 properties.@"surface-tree".impl,
                 properties.title.impl,
                 properties.@"title-override".impl,
+                properties.@"title-status".impl,
                 properties.tooltip.impl,
             });
 

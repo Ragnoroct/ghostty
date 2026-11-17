@@ -63,6 +63,9 @@ pub const Message = union(enum) {
     /// of any length
     set_title: [256]u8,
 
+    /// An opaque status prefix, independent of the terminal's title.
+    set_title_status: [256]u8,
+
     /// Report the window title back to the terminal
     report_title: ReportTitleStyle,
 
