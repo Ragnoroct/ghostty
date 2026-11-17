@@ -2787,6 +2787,16 @@ pub fn keyEventIsBinding(
     };
 }
 
+/// Returns true when a key event represents typing for viewport scrolling.
+/// Release events may encode data for protocols such as the kitty keyboard
+/// protocol, but releasing a key is not a new keystroke.
+fn keyActionScrollsToBottom(action: input.Action) bool {
+    return switch (action) {
+        .press, .repeat => true,
+        .release => false,
+    };
+}
+
 /// Called for any key events. This handles keybindings, encoding and
 /// sending to the terminal, etc.
 pub fn keyCallback(
@@ -2973,7 +2983,11 @@ pub fn keyCallback(
             try self.setSelection(null);
         }
 
-        if (self.config.scroll_to_bottom.keystroke) self.io.terminal.scrollViewport(.bottom);
+        if (self.config.scroll_to_bottom.keystroke and
+            keyActionScrollsToBottom(event.action))
+        {
+            self.io.terminal.scrollViewport(.bottom);
+        }
 
         try self.queueRender();
     }
@@ -6743,4 +6757,10 @@ test "promptClickRelativeRow" {
         );
         try testing.expectEqual(case.expected, promptClickRelativeRow(&pages, prompt, click));
     }
+}
+
+test "Surface: key release does not scroll to bottom" {
+    try std.testing.expect(keyActionScrollsToBottom(.press));
+    try std.testing.expect(keyActionScrollsToBottom(.repeat));
+    try std.testing.expect(!keyActionScrollsToBottom(.release));
 }
