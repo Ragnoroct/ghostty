@@ -248,6 +248,10 @@ pub const Window = extern struct {
     const Private = struct {
         state_id: window_state.Id = undefined,
         snapshot: window_snapshot.State = .{},
+
+        /// Idle source that closes an empty window after tab transfers finish.
+        empty_window_close_source: ?c_uint = null,
+
         /// Whether this window is a quick terminal. If it is then it
         /// behaves slightly differently under certain scenarios.
         quick_terminal: bool = false,
@@ -1502,6 +1506,13 @@ pub const Window = extern struct {
         const priv = self.private();
         priv.snapshot.dispose();
 
+        if (priv.empty_window_close_source) |source| {
+            priv.empty_window_close_source = null;
+            if (glib.Source.remove(source) == 0) {
+                log.warn("unable to remove empty window close source", .{});
+            }
+        }
+
         if (priv.handle_active_state_source) |v| {
             if (glib.Source.remove(v) == 0) {
                 log.warn("unable to remove handle active state source", .{});
@@ -1923,18 +1934,49 @@ pub const Window = extern struct {
         self: *Self,
     ) callconv(.c) void {
         const priv = self.private();
-        if (priv.tab_view.getNPages() == 0) {
-            // If we have no pages left then we want to close window.
+        if (priv.tab_view.getNPages() != 0) return;
 
-            // If the tab overview is open, then we don't close the window
-            // because its a rather abrupt experience. This also fixes an
-            // issue where dragging out the last tab in the tab overview
-            // won't cause Ghostty to exit.
-            if (priv.tab_overview.getOpen() != 0) return;
+        // A dragged page is temporarily detached, even if the drop is
+        // later cancelled. Keep its source window alive until the
+        // transfer finishes so cancellation can restore the page.
+        if (priv.tab_view.getIsTransferringPage() != 0) return;
 
+        // Keep the tab overview open even if its last tab is dragged away.
+        if (priv.tab_overview.getOpen() != 0) return;
+        if (priv.empty_window_close_source != null) return;
+
+        // libadwaita emits transfer notifications while walking its tab views.
+        // Defer closing until it returns. The source owns a reference until
+        // it runs or is removed during dispose.
+        priv.empty_window_close_source = glib.idleAddFull(
+            glib.PRIORITY_DEFAULT_IDLE,
+            closeEmptyWindow,
+            self.ref(),
+            closeEmptyWindowDestroy,
+        );
+    }
+
+    fn closeEmptyWindow(data: ?*anyopaque) callconv(.c) c_int {
+        const self: *Self = @ptrCast(@alignCast(data orelse
+            return @intFromBool(glib.SOURCE_REMOVE)));
+        const priv = self.private();
+        priv.empty_window_close_source = null;
+
+        // A page may have arrived or a new transfer started before this idle.
+        if (priv.tab_view.getNPages() == 0 and
+            priv.tab_view.getIsTransferringPage() == 0 and
+            priv.tab_overview.getOpen() == 0)
+        {
             self.as(gtk.Window).close();
         }
+        return @intFromBool(glib.SOURCE_REMOVE);
     }
+
+    fn closeEmptyWindowDestroy(data: ?*anyopaque) callconv(.c) void {
+        const self: *Self = @ptrCast(@alignCast(data orelse return));
+        self.unref();
+    }
+
     fn setupTabMenu(
         _: *adw.TabView,
         page: ?*adw.TabPage,

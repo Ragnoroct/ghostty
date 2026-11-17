@@ -41,7 +41,9 @@ test "title status: unknown OSC capture handles fragmentation and both terminato
         buf: [256]u8 = undefined,
         status: ?[:0]const u8 = null,
 
-        pub fn vt(self: *@This(), comptime action: terminal.StreamAction.Key, value: terminal.StreamAction.Value(action)) !void {
+        pub fn deinit(_: *@This()) void {}
+
+        pub fn vt(self: *@This(), comptime action: terminal.StreamAction.Key, value: terminal.StreamAction.Value(action)) void {
             if (action == .osc_unknown)
                 self.status = decode(value.content, value.truncated, &self.buf);
         }
