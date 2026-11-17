@@ -12,7 +12,18 @@ template $GhosttyTitleDialog: Adw.AlertDialog {
   default-response: "ok";
   focus-widget: entry;
 
-  extra-child: Entry entry {
-    activates-default: true;
+  extra-child: Box {
+    orientation: vertical;
+    spacing: 12;
+
+    Entry entry {
+      activates-default: true;
+    }
+
+    CheckButton status_updates {
+      visible: false;
+      label: _("Allow live status updates");
+      tooltip-text: _("Keep this name and show activity, attention, and task progress.");
+    }
   };
 }

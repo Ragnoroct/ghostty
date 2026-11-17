@@ -168,6 +168,9 @@ pub const Tab = extern struct {
         /// The manually overridden title.
         title_override: ?[:0]const u8 = null,
 
+        /// Keep recognized activity decorations alongside a manually set name.
+        title_status_updatable: bool = false,
+
         /// The tooltip of this tab. This is usually bound to the active surface.
         tooltip: ?[:0]const u8 = null,
 
@@ -256,26 +259,28 @@ pub const Tab = extern struct {
 
     /// Overridden title. This will be generally be shown over the title
     /// unless this is unset (null).
-    pub fn setTitleOverride(self: *Self, title: ?[:0]const u8) void {
+    pub fn setTitleOverride(self: *Self, title: ?[:0]const u8, status_updatable: bool) void {
         const priv = self.private();
         if (priv.title_override) |v| glib.free(@ptrCast(@constCast(v)));
         priv.title_override = null;
         if (title) |v| priv.title_override = glib.ext.dupeZ(u8, v);
+        priv.title_status_updatable = title != null and status_updatable;
         self.as(gobject.Object).notifyByPspec(properties.@"title-override".impl.param_spec);
         if (ext.getAncestor(@import("window.zig").Window, self.as(gtk.Widget))) |window|
             window.getSnapshotState().structural();
     }
     fn titleDialogSet(
-        _: *TitleDialog,
+        dialog: *TitleDialog,
         title_ptr: [*:0]const u8,
         self: *Self,
     ) callconv(.c) void {
         const title = std.mem.span(title_ptr);
-        self.setTitleOverride(if (title.len == 0) null else title);
+        self.setTitleOverride(if (title.len == 0) null else title, dialog.getStatusUpdates());
     }
     pub fn promptTabTitle(self: *Self) void {
         const priv = self.private();
         const dialog = TitleDialog.new(.tab, priv.title_override orelse priv.title);
+        dialog.setStatusUpdates(priv.title_status_updatable);
         _ = TitleDialog.signals.set.connect(
             dialog,
             *Self,
@@ -483,7 +488,7 @@ pub const Tab = extern struct {
     }
 
     fn closureComputedTitle(
-        _: *Self,
+        self: *Self,
         config_: ?*Config,
         terminal_: ?[*:0]const u8,
         surface_override_: ?[*:0]const u8,
@@ -536,7 +541,12 @@ pub const Tab = extern struct {
             buf.writer.writeAll("🔍 ") catch {};
         }
 
-        buf.writer.writeAll(plain) catch return glib.ext.dupeZ(u8, plain);
+        @import("../title_activity.zig").writeTitle(
+            &buf.writer,
+            plain,
+            if (terminal_) |v| std.mem.span(v) else null,
+            tab_override_ != null and self.private().title_status_updatable,
+        ) catch return glib.ext.dupeZ(u8, plain);
         return glib.ext.dupeZ(u8, buf.written());
     }
 

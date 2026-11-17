@@ -80,6 +80,7 @@ pub const TitleDialog = extern struct {
         // Template bindings
         target: Target,
         entry: *gtk.Entry,
+        status_updates: *gtk.CheckButton,
 
         pub var offset: c_int = 0;
     };
@@ -90,6 +91,16 @@ pub const TitleDialog = extern struct {
 
     pub fn new(target: Target, initial_value: ?[:0]const u8) *Self {
         return gobject.ext.newInstance(Self, .{ .target = target, .@"initial-value" = initial_value });
+    }
+
+    pub fn setStatusUpdates(self: *Self, enabled: bool) void {
+        const button = self.private().status_updates;
+        button.as(gtk.Widget).setVisible(@intFromBool(true));
+        button.setActive(@intFromBool(enabled));
+    }
+
+    pub fn getStatusUpdates(self: *Self) bool {
+        return self.private().status_updates.getActive() != 0;
     }
 
     pub fn present(self: *Self, parent_: *gtk.Widget) void {
@@ -198,6 +209,7 @@ pub const TitleDialog = extern struct {
 
             // Bindings
             class.bindTemplateChildPrivate("entry", .{});
+            class.bindTemplateChildPrivate("status_updates", .{});
 
             // Properties
             gobject.ext.registerProperties(class, &.{

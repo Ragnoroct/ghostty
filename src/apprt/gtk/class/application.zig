@@ -3003,7 +3003,11 @@ const Action = struct {
                     log.warn("surface is not in a tab, ignoring set_tab_title", .{});
                     return false;
                 };
-                tab.setTitleOverride(if (value.title.len == 0) null else value.title);
+                const override = @import("../title_activity.zig").parseOverride(value.title);
+                tab.setTitleOverride(
+                    if (override.title.len == 0) null else override.title[0.. :0],
+                    override.status_updatable,
+                );
                 return true;
             },
         }
